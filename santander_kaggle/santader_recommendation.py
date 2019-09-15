@@ -6,14 +6,16 @@ import lightgbm as lgb
 
 logger = get_logger(__name__)
 
+
 class Config:
     clean_raw_data = True
     load_clean_raw_data = not clean_raw_data
-    process_raw_data =True
-    #For memory reasons, only keep subset of data
-    limit_dates=True
-    date_limit = '2015-09-01'
-    train_test_date_split = '2016-02-01'
+    process_raw_data = True
+    # For memory reasons, only keep subset of data
+    limit_dates = True
+    date_limit = "2015-09-01"
+    train_test_date_split = "2016-02-01"
+
 
 def translate_columns(df):
     translation_dict = get_translation_dict()
@@ -101,14 +103,14 @@ def clean_data(df):
         df[date_col] = pd.to_datetime(df[date_col])
 
     if Config.limit_dates:
-        df = df[df['snapshot_date']>Config.date_limit]
+        df = df[df["snapshot_date"] > Config.date_limit]
 
     # Clean missing data types #TODO
-    df =df.replace('NA', pd.np.nan)
-    df =df.replace(' NA', pd.np.nan)
+    df = df.replace("NA", pd.np.nan)
+    df = df.replace(" NA", pd.np.nan)
 
     # Change S,N boolean columns, and 1, 99 columns
-    df['sex'] = df['sex'].replace(to_replace={'H':0, 'V':1})
+    df["sex"] = df["sex"].replace(to_replace={"H": 0, "V": 1})
     df["is_primary"] = df["is_primary"].replace(to_replace={99: 0}).astype(float)
     bool_dict = {"S": 1, "N": 0}
     for i in ("residence_index", "foreigner_index", "spouse_index", "deceased_index"):
@@ -117,7 +119,7 @@ def clean_data(df):
             df[i] = df[i].replace(to_replace=bool_dict)
             df[i] = df[i].astype(float)
             logger.info((i, df[i].unique()))
-    df['age'] = df['age'].astype(float)
+    df["age"] = df["age"].astype(float)
     # Median imputation
     # TODO
     # need to decide what to do
@@ -125,18 +127,19 @@ def clean_data(df):
     logger.info("Have %s suspect rows", len(suspect_rows))
     return df
 
+
 def process_df(df):
     logger.info(df["snapshot_date"].unique())
     df = df.sort_values(by="snapshot_date")
     cust_df = df.groupby("customer_id")
     for col in df.columns:
         # TODO change to num_months
-        for i in range(1,2):
+        for i in range(1, 2):
             df["prev_{}_{}".format(i, col)] = cust_df[col].shift(i)
     # Ignore rows with no product bought
     rows_with_acquisition = get_product_deltas(df)
     rows_with_acquisition = rows_with_acquisition.any(axis=1)
-    rows_to_keep = rows_with_acquisition | ~df['is_train']
+    rows_to_keep = rows_with_acquisition | ~df["is_train"]
     df = df[rows_to_keep]
     # for col in df.columns:
     #     # TODO change to num_months
@@ -148,15 +151,13 @@ def process_df(df):
 
 def get_product_deltas(df):
     prev_product_cols = [i for i in df.columns if "has" in i and "1" in i]
-    col_name_map = {
-        i:i.replace("prev_1_", '')  for i in prev_product_cols
-    }
+    col_name_map = {i: i.replace("prev_1_", "") for i in prev_product_cols}
     rows_with_acquisition = pd.DataFrame()
     logger.info(col_name_map)
-    for i,v in col_name_map.items():
-        bool_col = df[v]>df[i]
-        rows_with_acquisition = pd.concat([rows_with_acquisition, bool_col],axis=1)
-        rows_with_acquisition.columns=list(rows_with_acquisition.columns)[:-1]+[v]
+    for i, v in col_name_map.items():
+        bool_col = df[v] > df[i]
+        rows_with_acquisition = pd.concat([rows_with_acquisition, bool_col], axis=1)
+        rows_with_acquisition.columns = list(rows_with_acquisition.columns)[:-1] + [v]
     # Increase 0 to 1 represents an acquisition, 1 to 0 a loss. So need to check
     # greater than rather than  not equals
     # rows_with_acquisition = df[product_cols] > prev_acquisition_df
@@ -170,11 +171,12 @@ def build_models(df):
     model_map = {}
     # Ignore first row, as don't know if there is an acquistion
     train_df = df[
-        (df["snapshot_date"] < Config.train_test_date_split) & (df["snapshot_date"] > "2015-01-28")
+        (df["snapshot_date"] < Config.train_test_date_split)
+        & (df["snapshot_date"] > "2015-01-28")
     ]
     test_df = df[(df["snapshot_date"] >= Config.train_test_date_split)]
-    logger.info("Train has %s snapshots", len(train_df['snapshot_date'].unique()))
-    logger.info("Test has %s snapshots", len(test_df['snapshot_date'].unique()))
+    logger.info("Train has %s snapshots", len(train_df["snapshot_date"].unique()))
+    logger.info("Test has %s snapshots", len(test_df["snapshot_date"].unique()))
     train_x, train_y = get_x_y_variables(train_df)
     test_x, test_y = get_x_y_variables(test_df)
 
@@ -183,7 +185,7 @@ def build_models(df):
     # TODO fix modelling needs to predict delta, not actual value
     params = {"objective": "binary", "metric": "binary_logloss"}
     for i in test_y.columns:
-        logger.info("Training model for feature %s",i)
+        logger.info("Training model for feature %s", i)
         train_dataset = lgb.Dataset(train_x, label=train_y.loc[:, i])
         test_dataset = lgb.Dataset(test_x, label=test_y.loc[:, i])
         model = lgb.train(
@@ -197,7 +199,7 @@ def build_models(df):
 
 
 def get_x_y_variables(train_df):
-    #TODO one hot encode some of these features
+    # TODO one hot encode some of these features
     train_column_check = lambda i: not DataMapper.test_column_check(i) and not any(
         [
             j in i
@@ -216,8 +218,8 @@ def get_x_y_variables(train_df):
                 "province_name",
                 "segmentation",
                 "gross_household_income",
-            "is_train",
-            'customer_type_beginning_of_the_month'
+                "is_train",
+                "customer_type_beginning_of_the_month",
             )
         ]
     )
@@ -228,12 +230,14 @@ def get_x_y_variables(train_df):
 
 
 def get_prediction(df, model_map):
-    #TODO need to order items to respect MAP
-    prediction_rows=df
+    # TODO need to order items to respect MAP
+    prediction_rows = df
     prediction_x, prediction_y = get_x_y_variables(prediction_rows)
-    logger.info("Making predictions for %s rows" ,len(prediction_x))
+    logger.info("Making predictions for %s rows", len(prediction_x))
     for i, v in model_map.items():
-        df.loc[df["snapshot_date"] > "2016-05-01","will_have_{}".format(i) ] = v.predict(prediction_x)
+        df.loc[
+            df["snapshot_date"] > "2016-05-01", "will_have_{}".format(i)
+        ] = v.predict(prediction_x)
         # prediction_rows["will_have_{}".format(i)] = v.predict(prediction_x)
     return prediction_rows
 
@@ -255,9 +259,11 @@ def get_formatted_prediction(prediction_rows):
         ),
         axis=1,
     )
-    pred_df = pd.concat([pd.DataFrame(prediction_cols), prediction_rows['customer_id']], axis=1)
+    pred_df = pd.concat(
+        [pd.DataFrame(prediction_cols), prediction_rows["customer_id"]], axis=1
+    )
     # pred_df = pd.DataFrame(prediction_cols.reset_index())
-    pred_df.columns = [ "added_products", "ncodpers"]
+    pred_df.columns = ["added_products", "ncodpers"]
     pred_df = pred_df[list(pred_df.columns)[::-1]]
 
     # pred_df['ncodpers'] = prediction_rows['customer_id']
@@ -290,18 +296,15 @@ def main():
         # train_data = pd.read_csv(
         #     os.path.join(data_path, "train_subsample.csv"), index_col=[0]
         # )
-        test_data = pd.read_csv(os.path.join(data_path, "test_ver2.csv"),
-            )
+        test_data = pd.read_csv(os.path.join(data_path, "test_ver2.csv"))
 
         # train_data = translate_columns(train_data)
         # small_cust_data = train_data[train_data['customer_id'].isin(customers)]
         # small_cust_data.to_csv(os.path.join(data_path, 'train_subsample.csv'))
         #
-        train_data['is_train'] = True
-        test_data['is_train'] = False
-        pipeline = (translate_columns, clean_data,
-                    process_df
-                    )
+        train_data["is_train"] = True
+        test_data["is_train"] = False
+        pipeline = (translate_columns, clean_data, process_df)
         # test_data = translate_columns(test_data)
         # logger.info("Have %s test customers ", len(test_data["customer_id"].unique()))
         # logger.info(929619 in test_data["customer_id"].unique())
@@ -316,21 +319,26 @@ def main():
         logger.info(joint_data.shape)
         joint_data.info()
         logger.info("Have %s customers ", len(joint_data["customer_id"].unique()))
-        logger.info("Have %s test customers ", len(joint_data.loc[joint_data['is_train']==0,"customer_id"].unique()))
+        logger.info(
+            "Have %s test customers ",
+            len(joint_data.loc[joint_data["is_train"] == 0, "customer_id"].unique()),
+        )
 
         # joint_data.to_csv('processed_data.csv')
     else:
-        joint_data = pd.read_csv('processed_data.csv')
-    #Due to memory leaks,we separate this function
+        joint_data = pd.read_csv("processed_data.csv")
+    # Due to memory leaks,we separate this function
     joint_data = process_df(joint_data)
-    logger.info("Have %s test customers ", len(
-        joint_data.loc[joint_data['is_train'] == 0, "customer_id"].unique()))
+    logger.info(
+        "Have %s test customers ",
+        len(joint_data.loc[joint_data["is_train"] == 0, "customer_id"].unique()),
+    )
 
     logger.info(joint_data.dtypes)
     logger.info(joint_data.shape)
-    train_data = joint_data[joint_data['is_train']]
+    train_data = joint_data[joint_data["is_train"]]
 
-    test_data = joint_data[~joint_data['is_train']]
+    test_data = joint_data[~joint_data["is_train"]]
     logger.info("Have %s test customers ", len(test_data["customer_id"].unique()))
     # train_data = process_df(train_data)
     models = build_models(train_data)
