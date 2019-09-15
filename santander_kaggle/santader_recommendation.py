@@ -1,29 +1,50 @@
-import pandas as pd
+import io
 import os
-from rshanker779_common.utilities import time_it
-from rshanker779_common.logger import get_logger
+from typing import Tuple, Callable
+
 import lightgbm as lgb
+import pandas as pd
+from rshanker779_common.logger import get_logger
+from rshanker779_common.utilities import time_it
 
 logger = get_logger(__name__)
 
 
+#TODO
+#Make sure we make at least one prediction for each customer
+#Fix order of predictions
+##One hot encode/map appropriate variables
+
 class Config:
+    """
+    Class to hold any global config
+    """
+
     clean_raw_data = True
     load_clean_raw_data = not clean_raw_data
     process_raw_data = True
     # For memory reasons, only keep subset of data
     limit_dates = True
     date_limit = "2015-09-01"
-    train_test_date_split = "2016-02-01"
+    train_test_date_split = "2016-04-01"
+    data_directory = os.path.join("..", "data")
 
 
-def translate_columns(df):
+def translate_columns(df: pd.DataFrame) -> pd.DataFrame:
     translation_dict = get_translation_dict()
     df = df.rename(columns=translation_dict)
     return df
 
 
-def get_translation_dict():
+def log_dataframe_information(df: pd.DataFrame) -> None:
+    logger.info("Shape %s", df.shape)
+    # logger.info("Dtypes \n %s", df.dtypes)
+    buffer = io.StringIO()
+    df.info(buf=buffer)
+    logger.info(buffer.getvalue())
+
+
+def get_translation_dict() -> dict:
     translation_dict = {
         "fecha_dato": "snapshot_date",
         "ncodpers": "customer_id",
@@ -87,6 +108,27 @@ def get_translation_dict():
     return translation_dict
 
 
+def get_customer_dataframe() -> pd.DataFrame:
+    customer_data = pd.read_csv(
+        os.path.join(Config.data_directory, "train_ver2.csv"),
+        nrows=1000,
+        low_memory=False,
+    )
+    customer_data = translate_columns(customer_data)
+    customers = customer_data["customer_id"].unique()
+    train_data = get_train_data()
+    small_cust_data = train_data[train_data["customer_id"].isin(customers)]
+    return small_cust_data
+
+
+def get_train_data() -> pd.DataFrame:
+    return pd.read_csv(os.path.join(Config.data_directory, "train_ver2.csv"))
+
+
+def get_test_data() -> pd.DataFrame:
+    return pd.read_csv(os.path.join(Config.data_directory, "test_ver2.csv"))
+
+
 class DataMapper:
     """
     Class to hold functions that describe or transform data that will be
@@ -97,14 +139,14 @@ class DataMapper:
     pred_column_check = lambda i: "will" in i
 
 
-def clean_data(df):
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     # Clean date formats
     for date_col in ("snapshot_date", "initial_signup_date"):
         df[date_col] = pd.to_datetime(df[date_col])
 
     if Config.limit_dates:
-        df = df[df["snapshot_date"] > Config.date_limit]
-
+        df = df[(df["snapshot_date"] > Config.date_limit) | ~df["is_train"]]
+        logger.info("After date filtering shape is %s", df.shape)
     # Clean missing data types #TODO
     df = df.replace("NA", pd.np.nan)
     df = df.replace(" NA", pd.np.nan)
@@ -128,7 +170,7 @@ def clean_data(df):
     return df
 
 
-def process_df(df):
+def process_df(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(df["snapshot_date"].unique())
     df = df.sort_values(by="snapshot_date")
     cust_df = df.groupby("customer_id")
@@ -139,7 +181,7 @@ def process_df(df):
     # Ignore rows with no product bought
     rows_with_acquisition = get_product_deltas(df)
     rows_with_acquisition = rows_with_acquisition.any(axis=1)
-    rows_to_keep = rows_with_acquisition | ~df["is_train"]
+    rows_to_keep = ~df["is_train"] | rows_with_acquisition
     df = df[rows_to_keep]
     # for col in df.columns:
     #     # TODO change to num_months
@@ -149,7 +191,7 @@ def process_df(df):
     return df
 
 
-def get_product_deltas(df):
+def get_product_deltas(df: pd.DataFrame) -> pd.DataFrame:
     prev_product_cols = [i for i in df.columns if "has" in i and "1" in i]
     col_name_map = {i: i.replace("prev_1_", "") for i in prev_product_cols}
     rows_with_acquisition = pd.DataFrame()
@@ -166,7 +208,7 @@ def get_product_deltas(df):
     return rows_with_acquisition
 
 
-def build_models(df):
+def build_models(df: pd.DataFrame) -> dict:
     # train_set
     model_map = {}
     # Ignore first row, as don't know if there is an acquistion
@@ -179,9 +221,11 @@ def build_models(df):
     logger.info("Test has %s snapshots", len(test_df["snapshot_date"].unique()))
     train_x, train_y = get_x_y_variables(train_df)
     test_x, test_y = get_x_y_variables(test_df)
+    log_dataframe_information(train_x)
+    log_dataframe_information(test_x)
+    log_dataframe_information(train_y)
+    log_dataframe_information(test_y)
 
-    # test_x = test_df[[i for i in test_df.columns if train_column_check(i)]]
-    # test_y = test_df[[i for i in test_df.columns if test_column_check(i)]]
     # TODO fix modelling needs to predict delta, not actual value
     params = {"objective": "binary", "metric": "binary_logloss"}
     for i in test_y.columns:
@@ -198,7 +242,7 @@ def build_models(df):
     return model_map
 
 
-def get_x_y_variables(train_df):
+def get_x_y_variables(train_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     # TODO one hot encode some of these features
     train_column_check = lambda i: not DataMapper.test_column_check(i) and not any(
         [
@@ -229,7 +273,7 @@ def get_x_y_variables(train_df):
     return train_x, train_y
 
 
-def get_prediction(df, model_map):
+def get_prediction(df: pd.DataFrame, model_map: dict) -> pd.DataFrame:
     # TODO need to order items to respect MAP
     prediction_rows = df
     prediction_x, prediction_y = get_x_y_variables(prediction_rows)
@@ -242,7 +286,7 @@ def get_prediction(df, model_map):
     return prediction_rows
 
 
-def get_formatted_prediction(prediction_rows):
+def get_formatted_prediction(prediction_rows: pd.DataFrame) -> None:
     ind_prod_prediction = prediction_rows[
         [i for i in prediction_rows.columns if DataMapper.pred_column_check(i)]
     ]
@@ -271,7 +315,7 @@ def get_formatted_prediction(prediction_rows):
     pred_df.to_csv("my_pred.csv", index=False)
 
 
-def apply_pipeline(df, *args):
+def apply_pipeline(df: pd.DataFrame, *args: Callable) -> pd.DataFrame:
     out = df
     for callable in args:
         logger.info("Applying callable %s to data", callable)
@@ -281,71 +325,25 @@ def apply_pipeline(df, *args):
 
 @time_it
 def main():
-    data_path = "data"
-    rows_to_read = 100000  # Large data set, so in early experiments speeds up things
-    # customer_data = pd.read_csv(os.path.join(data_path, "train_ver2.csv"),
-    #     nrows=1000, low_memory=False)
-    # customer_data = translate_columns(customer_data)
-    # customers = customer_data['customer_id'].unique()
-    if Config.clean_raw_data:
-        train_data = pd.read_csv(
-            os.path.join(data_path, "train_ver2.csv"),
-            # nrows=rows_to_read,
-            # low_memory=False,
-        )
-        # train_data = pd.read_csv(
-        #     os.path.join(data_path, "train_subsample.csv"), index_col=[0]
-        # )
-        test_data = pd.read_csv(os.path.join(data_path, "test_ver2.csv"))
+    train_data = get_train_data()
+    test_data = get_test_data()
+    train_data["is_train"] = True
+    test_data["is_train"] = False
+    pipeline = (translate_columns, clean_data, process_df)
+    train_data = apply_pipeline(train_data, *pipeline)
+    log_dataframe_information(train_data)
+    test_data = apply_pipeline(test_data, *pipeline)
+    log_dataframe_information(test_data)
+    joint_data = train_data.append(test_data)
 
-        # train_data = translate_columns(train_data)
-        # small_cust_data = train_data[train_data['customer_id'].isin(customers)]
-        # small_cust_data.to_csv(os.path.join(data_path, 'train_subsample.csv'))
-        #
-        train_data["is_train"] = True
-        test_data["is_train"] = False
-        pipeline = (translate_columns, clean_data, process_df)
-        # test_data = translate_columns(test_data)
-        # logger.info("Have %s test customers ", len(test_data["customer_id"].unique()))
-        # logger.info(929619 in test_data["customer_id"].unique())
-        train_data = apply_pipeline(train_data, *pipeline)
-        test_data = apply_pipeline(test_data, *pipeline)
-        joint_data = train_data.append(test_data)
-
-        # joint_data = apply_pipeline(joint_data, *pipeline)
-
-        # train_data = clean_data(train_data)
-        logger.info(joint_data.dtypes)
-        logger.info(joint_data.shape)
-        joint_data.info()
-        logger.info("Have %s customers ", len(joint_data["customer_id"].unique()))
-        logger.info(
-            "Have %s test customers ",
-            len(joint_data.loc[joint_data["is_train"] == 0, "customer_id"].unique()),
-        )
-
-        # joint_data.to_csv('processed_data.csv')
-    else:
-        joint_data = pd.read_csv("processed_data.csv")
-    # Due to memory leaks,we separate this function
-    joint_data = process_df(joint_data)
+    logger.info("Have %s customers ", len(joint_data["customer_id"].unique()))
     logger.info(
         "Have %s test customers ",
         len(joint_data.loc[joint_data["is_train"] == 0, "customer_id"].unique()),
     )
-
-    logger.info(joint_data.dtypes)
-    logger.info(joint_data.shape)
-    train_data = joint_data[joint_data["is_train"]]
-
-    test_data = joint_data[~joint_data["is_train"]]
-    logger.info("Have %s test customers ", len(test_data["customer_id"].unique()))
-    # train_data = process_df(train_data)
     models = build_models(train_data)
-    # test_data =
     prediction_rows = get_prediction(test_data, models)
     get_formatted_prediction(prediction_rows)
-    return
 
 
 if __name__ == "__main__":
