@@ -1,0 +1,11 @@
+*.vscode*
+*.idea*
+*__pycache__*
+*.pyc
+*.sql
+build/*
+dist/*
+*.egg-info/*
+*.json
+*.ipynb_checkpoints*
+*.csv
