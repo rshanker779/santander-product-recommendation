@@ -8,7 +8,7 @@ import os
 
 class Data:
     data_directory = os.path.join("..", "data")
-    results_directory = os.path.join( os.path.join(os.path.dirname(__file__)), "results")
+    results_directory = os.path.join(os.path.join(os.path.dirname(__file__)), "results")
     full_train_data = None
 
 
@@ -83,5 +83,6 @@ def get_date_limited_train_data(date_list=None, customers=None) -> pd.DataFrame:
 def get_test_data() -> pd.DataFrame:
     return pd.read_csv(os.path.join(Data.data_directory, "test_ver2.csv"))
 
-def get_prediction_data() ->pd.DataFrame:
-    return pd.read_csv(os.path.join(Data.results_directory, 'predictions.csv'))
+
+def get_prediction_data() -> pd.DataFrame:
+    return pd.read_csv(os.path.join(Data.results_directory, "predictions.csv"))

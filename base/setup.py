@@ -20,6 +20,6 @@ setup(
     test_suite="tests",
     dependency_links=[
         "git+https://rshanker779@github.com/rshanker779/rshanker779_common.git#egg=rshanker779_common"
-    ], package_data={
-        "santander_kaggle": ["results/*.csv"]},
+    ],
+    package_data={"santander_kaggle": ["results/*.csv"]},
 )

@@ -359,7 +359,9 @@ def get_formatted_prediction(prediction_rows: pd.DataFrame) -> None:
         index=False,
     )
     if Config.save_sample_pred_df:
-        pred_df.iloc[:10].to_csv(os.path.join(d.Data.results_directory, 'predictions.csv'), index=False)
+        pred_df.iloc[:10].to_csv(
+            os.path.join(d.Data.results_directory, "predictions.csv"), index=False
+        )
     logger.info("Saved predictions to csv")
 
 
