@@ -1,25 +1,20 @@
 import io
+from typing import Iterable
 
+import numpy as np
 import pandas as pd
 from rshanker779_common.logger import get_logger
-logger = get_logger(__name__)
-from typing import Callable, Iterable
 from sklearn.base import BaseEstimator
-import numpy as np
+
+logger = get_logger(__name__)
+
+
 class Encoder:
     """Class to hold details about specific encoder"""
-    def __init__(self, encoder:BaseEstimator, cols:Iterable[str]):
+
+    def __init__(self, encoder: BaseEstimator, cols: Iterable[str]):
         self.encoder = encoder
         self.cols = cols
-
-    # def fit(self, *args, **kwargs):
-    #     return self.encoder.fit(*args, **kwargs)
-    #
-    # def transform(self, *args, **kwargs):
-    #     return self.encoder.transform(*args, **kwargs)
-    #
-    # def fit_transform(self, *args, **kwargs):
-    #     return self.encoder.fit_transform(*args, **kwargs)
 
 
 def get_translation_dict() -> dict:
@@ -92,10 +87,12 @@ def log_dataframe_information(df: pd.DataFrame) -> None:
     df.info(buf=buffer, verbose=True)
     logger.info(buffer.getvalue())
 
+
 def is_encoder_trained(encoder):
     return hasattr(encoder, "statistics_") or hasattr(encoder, "categories_")
 
-def get_ordinal_dict_from_encoder(encoder:BaseEstimator, cols:Iterable):
+
+def get_ordinal_dict_from_encoder(encoder: BaseEstimator, cols: Iterable):
     ordinal_dict = {}
     for i, v in zip(cols, encoder.categories_):
         mapping_dict = {k: j[0] for j, k in np.ndenumerate(v)}

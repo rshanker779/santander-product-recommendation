@@ -3,9 +3,9 @@
 *__pycache__*
 *.pyc
 *.sql
-build/*
-dist/*
-*.egg-info/*
+*build*
+*dist*
+*.egg-info*
 *.json
 *.ipynb_checkpoints*
 *.csv

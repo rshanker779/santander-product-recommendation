@@ -9,8 +9,11 @@ from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 import datetime
 import logging
 from functools import partial
-from santander_kaggle import recommendation_utilities as utils
+
+import santander_kaggle.recommendation_data as d
+import santander_kaggle.recommendation_utilities as utils
 import numpy as np
+
 
 logger = get_logger(__name__)
 file_handler = logging.FileHandler("{}.log".format(__file__))
@@ -19,6 +22,7 @@ logger.addHandler(file_handler)
 
 # TODO
 # Feature selection
+# Persistence
 
 
 class Config:
@@ -35,105 +39,34 @@ class Config:
     one_hot_encode = False
     label_encode = True
     product_recommendation_threshold = 0.5
-
-
-def categorical_cols():
-    return [
-        "employee_index",
-        "country",
-        "sex",
-        "is_new_customer",
-        "customer_seniority",
-        "is_primary",
-        "customer_type_beginning_of_the_month",
-        "customer_relation_beginning_of_the_month",
-        "residence_index",
-        "foreigner_index",
-        "spouse_index",
-        "entry_channel",
-        "deceased_index",
-        "province_code",
-        "address",
-        "activity_index",
-        "segmentation",
-    ]
-
-
-def continuous_cols():
-    return ["age", "gross_household_income"]
-
-
-def date_cols():
-    return ["snapshot_date", "initial_signup_date", "last_date_as_primary"]
+    save_sample_pred_df = True
 
 
 class RecommendationModelTransformer:
+    """
+    Class to hold transformer information for our data
+    """
+
     def __init__(self):
         self.one_hot = utils.Encoder(
-            OneHotEncoder(sparse=False, handle_unknown="ignore"), categorical_cols()
+            OneHotEncoder(sparse=False, handle_unknown="ignore"), d.categorical_cols()
         )
-        self.ordinal = utils.Encoder(OrdinalEncoder(dtype=int), categorical_cols())
+        self.ordinal = utils.Encoder(OrdinalEncoder(dtype=int), d.categorical_cols())
         self.categorical_imputer = utils.Encoder(
-            SimpleImputer(strategy="most_frequent"), categorical_cols()
+            SimpleImputer(strategy="most_frequent"), d.categorical_cols()
         )
         self.continuous_imputer = utils.Encoder(
-            SimpleImputer(strategy="median"), continuous_cols()
+            SimpleImputer(strategy="median"), d.continuous_cols()
         )
 
 
 transformer = RecommendationModelTransformer()
 
 
-class Data:
-    full_train_data = None
-
-
 def translate_columns(df: pd.DataFrame) -> pd.DataFrame:
     translation_dict = utils.get_translation_dict()
     df = df.rename(columns=translation_dict)
     return df
-
-
-def get_customer_dataframe() -> pd.DataFrame:
-    customer_csv = os.path.join(Config.data_directory, "train_subsample.csv")
-    if not os.path.exists(customer_csv):
-        customer_data = pd.read_csv(
-            os.path.join(Config.data_directory, "train_ver2.csv"),
-            nrows=1000,
-            low_memory=False,
-        )
-        customers = customer_data["ncodpers"].unique()
-        train_data = get_train_data()
-        small_cust_data = train_data[train_data["ncodpers"].isin(customers)]
-        small_cust_data.to_csv(customer_csv)
-        return small_cust_data
-    return pd.read_csv(customer_csv, index_col=[0])
-
-
-def get_train_data() -> pd.DataFrame:
-    if Data.full_train_data is None:
-        train_data = pd.read_csv(os.path.join(Config.data_directory, "train_ver2.csv"))
-        Data.full_train_data = train_data
-    else:
-        train_data = Data.full_train_data
-    return train_data
-
-
-def get_date_limited_train_data(date_list=None, customers=None) -> pd.DataFrame:
-    if date_list is None:
-        date_list = ["2015-04-28", "2015-05-28", "2015-06-28"]
-    train_data = get_train_data()
-    train_data = train_data[train_data["fecha_dato"].isin(date_list)]
-    if customers is None:
-        return train_data
-    else:
-        customers = list(train_data["ncodpers"].unique())[:customers]
-        train_data = train_data[train_data["ncodpers"].isin(customers)]
-        return train_data
-
-
-def get_test_data() -> pd.DataFrame:
-    return pd.read_csv(os.path.join(Config.data_directory, "test_ver2.csv"))
 
 
 def is_test_column(i: str) -> bool:
@@ -151,7 +84,7 @@ def get_time_col(default, format, x):
 def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # Clean date formats
-    for date_col in date_cols():
+    for date_col in d.date_cols():
         df[date_col] = pd.to_datetime(df[date_col])
         for (col_name, date_format) in (
             ("month_{}", "%m"),
@@ -165,7 +98,6 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     df = df.replace("\s*NA", pd.np.nan, regex=True)
     na_cols = [i for i in df.columns if i != "is_train" and not is_pred_column(i)]
     df[na_cols] = df[na_cols].fillna(-1)
-
 
     drop_cols = ["province_name", "initial_signup_date", "last_date_as_primary"]
 
@@ -359,9 +291,8 @@ def build_models(df: pd.DataFrame) -> dict:
         "num_iterations": 100000,
         "max_depth": 15,
         "learning_rate": 0.008,
-        "num_leaves":2**12,
-        "min_data_in_leaf":1000
-
+        "num_leaves": 2 ** 12,
+        "min_data_in_leaf": 1000,
     }
     for i in test_y.columns:
         logger.info("Training model for feature %s", i)
@@ -374,8 +305,10 @@ def build_models(df: pd.DataFrame) -> dict:
             early_stopping_rounds=10,
         )
         model_map[i] = model
-        feat_imp = pd.DataFrame(sorted(zip(model.feature_importance(), train_df.columns)),
-                     columns=['Value', 'Feature'])
+        feat_imp = pd.DataFrame(
+            sorted(zip(model.feature_importance(), train_df.columns)),
+            columns=["Value", "Feature"],
+        )
         logger.info(feat_imp)
     return model_map
 
@@ -404,39 +337,29 @@ def get_formatted_prediction(prediction_rows: pd.DataFrame) -> None:
     pred_cols = [i for i in prediction_rows.columns if is_pred_column(i)]
     translation_dict = utils.get_translation_dict()
     inverse_translation_dict = {v: i for i, v in translation_dict.items()}
-    translated_pred_cols = np.array([inverse_translation_dict[i.replace('will_have_','')] for i in pred_cols])
+    translated_pred_cols = np.array(
+        [inverse_translation_dict[i.replace("will_have_", "")] for i in pred_cols]
+    )
     ind_prod_prediction = prediction_rows[pred_cols]
-    # bought_product = ind_prod_prediction > 0.5
-    def get_products(x):
-        products = []
-        x = x.sort_values(ascending=False)
-        for i, v in x.iteritems():
-            if (
-                v <= Config.product_recommendation_threshold and len(products) < 7
-            ) or v > Config.product_recommendation_threshold:
-                products.append(inverse_translation_dict[i.replace("will_have_", "")])
-        return " ".join(products)
 
-    preds =np.argsort(ind_prod_prediction, axis=1)
+    preds = np.argsort(ind_prod_prediction, axis=1)
     preds = np.fliplr(preds)[:, :7]
-    preds = [' '.join(translated_pred_cols[i]) for i in preds]
+    preds = [" ".join(translated_pred_cols[i]) for i in preds]
     pred_df = pd.DataFrame(preds)
     pred_df.index = ind_prod_prediction.index
-    # prediction_cols = ind_prod_prediction.apply(get_products, axis=1)
 
-    pred_df = pd.concat(
-        [pred_df, prediction_rows["customer_id"]], axis=1
-    )
+    pred_df = pd.concat([pred_df, prediction_rows["customer_id"]], axis=1)
     pred_df.columns = ["added_products", "ncodpers"]
     pred_df = pred_df[list(pred_df.columns)[::-1]]
 
-    # pred_df['ncodpers'] = prediction_rows['customer_id']
     logger.info("Saving predictions to csv")
 
     pred_df.to_csv(
         "my_pred_{}.csv".format(datetime.datetime.now().strftime("%y_%m_%d_%H_%M_%S")),
         index=False,
     )
+    if Config.save_sample_pred_df:
+        pred_df.iloc[:10].to_csv(os.path.join(d.Data.results_directory, 'predictions.csv'), index=False)
     logger.info("Saved predictions to csv")
 
 
@@ -453,9 +376,6 @@ def main():
     try:
         logger.info("Starting pipeline")
         train_date_list = [
-            # "2015-01-28",
-            # "2015-02-28",
-            # "2015-03-28",
             "2015-04-28",
             "2015-05-28",
             "2015-06-28",
@@ -467,23 +387,19 @@ def main():
             "2015-12-28",
         ]
         test_date_list = ["2016-04-28", "2016-05-28"]
-        train_data = get_date_limited_train_data(train_date_list)
-        extra_test_data = get_date_limited_train_data(test_date_list)
-        Data.full_train_data = None
-        # all_data = get_date_limited_train_data(date_list=train_date_list+test_date_list,customers=10)
-        # train_data = all_data[all_data['fecha_dato'].isin(train_date_list)]
-        # train_data = get_customer_dataframe()
+        train_data = d.get_date_limited_train_data(train_date_list, 1000)
+        extra_test_data = d.get_date_limited_train_data(test_date_list)
+        d.Data.full_train_data = None
         train_data["is_train"] = True
-        # additional_rows_for_test = train_data[train_data[snapshot_col]==max_snapshot]
         pipeline = (translate_columns, clean_data, process_df)
         train_data = apply_pipeline(train_data, *pipeline)
         utils.log_dataframe_information(train_data)
-        test_data = get_test_data()
+        test_data = d.get_test_data()
         test_data["is_train"] = False
         test_data = test_data.append(extra_test_data)
-        # test_data = test_data[
-        #     test_data["ncodpers"].isin(train_data["customer_id"].unique())
-        # ]
+        test_data = test_data[
+            test_data["ncodpers"].isin(train_data["customer_id"].unique())
+        ]
         test_data = apply_pipeline(test_data, *pipeline)
         test_data = test_data[~test_data["is_train"]]
         utils.log_dataframe_information(test_data)
