@@ -58,6 +58,16 @@ class RecommendationModelTransformer:
         self.pipeline = (translate_columns, clean_data, process_df)
 
 
+class PersistedModel:
+    """
+    Class to hold our trained models and pipeline
+    """
+
+    def __init__(self, model_map: dict, transformer: RecommendationModelTransformer):
+        self.model_map = model_map
+        self.transformer = transformer
+
+
 def translate_columns(df: pd.DataFrame) -> pd.DataFrame:
     translation_dict = utils.get_translation_dict()
     df = df.rename(columns=translation_dict)
@@ -85,10 +95,7 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     # Clean date formats
     for date_col in d.date_cols():
         df[date_col] = pd.to_datetime(df[date_col])
-        for (col_name, date_format) in (
-            ("month_{}", "%m"),
-            ("year_{}", "%y"),
-        ):
+        for (col_name, date_format) in (("month_{}", "%m"), ("year_{}", "%y")):
             df[col_name.format(date_col)] = (
                 df[date_col].apply(partial(get_time_col, -1, date_format)).astype(int)
             )
@@ -264,7 +271,7 @@ def process_df(df: pd.DataFrame) -> pd.DataFrame:
     deeper_look_back_level = 4
     deeper_look_back_cols = [i for i in df.columns if is_test_column(i)]
     for col in df[deeper_look_back_cols]:
-        for i in range(Config.look_back_level+1, deeper_look_back_level + 1):
+        for i in range(Config.look_back_level + 1, deeper_look_back_level + 1):
             df["prev_{}_{}".format(i, col)] = cust_df[col].shift(i)
     # Ignore rows with no product bought
     rows_with_acquisition = get_product_deltas(df)
@@ -390,7 +397,6 @@ def get_formatted_prediction(prediction_rows: pd.DataFrame, save_csv=True) -> No
     return pred_df
 
 
-
 def apply_pipeline(df: pd.DataFrame, *args: Callable) -> pd.DataFrame:
     """
     Quick pipeline function that chains a series of functions that take a dataframe and
@@ -450,17 +456,12 @@ def main():
         get_formatted_prediction(prediction_rows, True)
         if Config.save_models_and_pipeline:
             joblib.dump(
-                transformer,
+                PersistedModel(models, transformer),
                 "transfomer_{}.pkl".format(
                     datetime.datetime.now().strftime("%y_%m_%d_%H_%M_%S")
                 ),
             )
-            joblib.dump(
-                models,
-                "models_{}.pkl".format(
-                    datetime.datetime.now().strftime("%y_%m_%d_%H_%M_%S")
-                ),
-            )
+
     except:
         logger.exception("Error occurred")
 
