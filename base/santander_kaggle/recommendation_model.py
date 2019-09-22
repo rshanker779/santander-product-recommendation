@@ -268,16 +268,26 @@ def process_df(df: pd.DataFrame) -> pd.DataFrame:
     for col in df[look_back_cols]:
         for i in range(1, Config.look_back_level + 1):
             df["prev_{}_{}".format(i, col)] = cust_df[col].shift(i)
-    deeper_look_back_level = 4
+    deeper_look_back_level = 3
     deeper_look_back_cols = [i for i in df.columns if is_test_column(i)]
     for col in df[deeper_look_back_cols]:
         for i in range(Config.look_back_level + 1, deeper_look_back_level + 1):
             df["prev_{}_{}".format(i, col)] = cust_df[col].shift(i)
     # Ignore rows with no product bought
+    logger.info(
+        "Before removing non acquisitions, had %s customers, shape %s",
+        len(df["customer_id"].unique()),
+        df.shape,
+    )
     rows_with_acquisition = get_product_deltas(df)
     rows_with_acquisition = rows_with_acquisition.any(axis=1)
     rows_to_keep = ~df["is_train"] | rows_with_acquisition
     df = df[rows_to_keep]
+    logger.info(
+        "After removing non acquisitions, had %s customers, shape %s",
+        len(df["customer_id"].unique()),
+        df.shape,
+    )
 
     return df
 
@@ -429,7 +439,7 @@ def main():
             "2015-12-28",
         ]
         test_date_list = ["2016-03-28", "2016-04-28", "2016-05-28"]
-        train_data = d.get_date_limited_train_data(train_date_list, 10000)
+        train_data = d.get_date_limited_train_data(train_date_list)
         logger.info("Customers: %s", len(train_data["ncodpers"].unique()))
         extra_test_data = d.get_date_limited_train_data(test_date_list)
         d.Data.full_train_data = None
@@ -440,9 +450,9 @@ def main():
         test_data = d.get_test_data()
         test_data["is_train"] = False
         test_data = test_data.append(extra_test_data)
-        test_data = test_data[
-            test_data["ncodpers"].isin(train_data["customer_id"].unique())
-        ]
+        # test_data = test_data[
+        #     test_data["ncodpers"].isin(train_data["customer_id"].unique())
+        # ]
         test_data = apply_pipeline(test_data, *pipeline)
         test_data = test_data[~test_data["is_train"]]
         utils.log_dataframe_information(test_data)

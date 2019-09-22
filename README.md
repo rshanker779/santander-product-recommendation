@@ -20,6 +20,6 @@ docker run -p 5000:5000 santander:latest
 ```
 To test everything is working run the curl command:
 ```            
-curl -i -X POST -H 'Content-Type: application/json' -d '{"ncodper":1}' http://0.0.0.0:5000/predict/
+curl -i -X POST -H 'Content-Type: application/json' -d '{"ncodpers":1}' http://0.0.0.0:5000/predict
 ```
 
