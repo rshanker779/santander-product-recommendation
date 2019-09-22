@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.com/rshanker779/santander-product-recommendation.svg?branch=master)](https://travis-ci.com/rshanker779/santander-product-recommendation)
+
 # Santander Product Recommendation Solution
 
 My solution to https://www.kaggle.com/c/santander-product-recommendation/overview
