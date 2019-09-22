@@ -9,7 +9,7 @@ from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 import datetime
 import logging
 from functools import partial
-
+import joblib
 import santander_kaggle.recommendation_data as d
 import santander_kaggle.recommendation_utilities as utils
 import numpy as np
@@ -19,10 +19,6 @@ logger = get_logger(__name__)
 file_handler = logging.FileHandler("{}.log".format(__file__))
 file_handler.setFormatter(get_default_formatter())
 logger.addHandler(file_handler)
-
-# TODO
-# Feature selection
-# Persistence
 
 
 class Config:
@@ -40,6 +36,7 @@ class Config:
     label_encode = True
     product_recommendation_threshold = 0.5
     save_sample_pred_df = True
+    save_models_and_pipeline = True
 
 
 class RecommendationModelTransformer:
@@ -58,9 +55,7 @@ class RecommendationModelTransformer:
         self.continuous_imputer = utils.Encoder(
             SimpleImputer(strategy="median"), d.continuous_cols()
         )
-
-
-transformer = RecommendationModelTransformer()
+        self.pipeline = (translate_columns, clean_data, process_df)
 
 
 def translate_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -81,6 +76,10 @@ def get_time_col(default, format, x):
     return x.strftime(format) if not pd.isnull(x) else default
 
 
+def get_columns_that_exist(desired_columns: list, df_columns: list):
+    return [i for i in desired_columns if i in set(df_columns)]
+
+
 def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # Clean date formats
@@ -89,7 +88,6 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
         for (col_name, date_format) in (
             ("month_{}", "%m"),
             ("year_{}", "%y"),
-            ("code_{}", "%y%m"),
         ):
             df[col_name.format(date_col)] = (
                 df[date_col].apply(partial(get_time_col, -1, date_format)).astype(int)
@@ -101,6 +99,76 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
     drop_cols = ["province_name", "initial_signup_date", "last_date_as_primary"]
 
+    final_cols = get_features()
+    df = df[final_cols]
+    if Config.label_encode:
+        ordinal = transformer.ordinal.encoder
+        label_cols = get_columns_that_exist(transformer.ordinal.cols, df.columns)
+        if not utils.is_encoder_trained(ordinal):
+            df[label_cols] = ordinal.fit_transform(df[label_cols].astype(str))
+        else:
+            logger.info("Encoder %s is trained", ordinal)
+            # Annoyingly have to do this, otherwise sklearn can't handle missing values
+            # ordinal_dict = utils.get_ordinal_dict_from_encoder(ordinal, label_cols)
+            ordinal_dict = utils.get_ordinal_dict_from_encoder(ordinal, label_cols)
+            f = partial(map_dataframe_with_dict_and_default, -1, ordinal_dict)
+            df[label_cols] = df[label_cols].apply(f)
+        df[label_cols] = df[label_cols].astype(int)
+    if Config.impute_missing_cat_values:
+
+        imputer = transformer.categorical_imputer.encoder
+        mode_cols = get_columns_that_exist(
+            transformer.categorical_imputer.cols, df.columns
+        )
+        if utils.is_encoder_trained(imputer):
+            logger.info("Encoder %s is trained", imputer)
+            method = imputer.transform
+        else:
+            method = imputer.fit_transform
+        df[mode_cols] = method(df[mode_cols].astype(str))
+
+    if Config.impute_missing_con_values:
+        median_imputer = transformer.continuous_imputer.encoder
+        median_cols = get_columns_that_exist(
+            transformer.continuous_imputer.cols, df.columns
+        )
+        if utils.is_encoder_trained(median_imputer):
+            logger.info("Encoder %s is trained", median_imputer)
+            method = median_imputer.transform
+        else:
+            method = median_imputer.fit_transform
+        df[median_cols] = method(df[median_cols])
+
+    if Config.one_hot_encode:
+        one_hot = transformer.one_hot.encoder
+        one_hot_cols = get_columns_that_exist(transformer.one_hot.cols, df.columns)
+        if utils.is_encoder_trained(one_hot):
+            method = one_hot.transform
+        else:
+            method = one_hot.fit_transform
+        res = method(df[one_hot_cols].astype(str))
+        drop_cols += one_hot_cols
+        col_list = []
+        for i, j in zip(one_hot_cols, one_hot.categories_):
+            col_list += ["is_{}_{}".format(str(k).replace(" ", "_"), i) for k in j]
+        one_hot_df = pd.DataFrame(res, columns=col_list, dtype=int)
+        one_hot_df.index = df.index
+        df = pd.concat([df, one_hot_df], axis=1)
+
+    utils.log_dataframe_information(df)
+    # suspect_rows = df[df["foreigner_index"] + df["residence_index"] == 0]
+    # logger.info("Have %s suspect rows", len(suspect_rows))
+    df = df[[i for i in df.columns if i not in set(drop_cols)]]
+    if "is_train" in set(df.columns):
+        df["is_train"] = df["is_train"].astype(bool)
+    else:
+        df["is_train"] = True
+    # df = df[final_cols]
+    logger.info("Dataframe cols %s", df.columns)
+    return df
+
+
+def get_features():
     final_cols = [
         "snapshot_date",
         "customer_id",
@@ -108,7 +176,20 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
         "is_new_customer",
         "address",
         "activity_index",
-        "gross_household_income",
+        "gross_household_income",  # "spouse_index",
+        # "employee_index",
+        # "customer_seniority",
+        # "is_primary",
+        # "customer_type_beginning_of_the_month",
+        # "customer_relation_beginning_of_the_month",
+        # "province_code",
+        # "entry_channel",
+        # "country",
+        "sex",
+        "residence_index",
+        "foreigner_index",
+        "deceased_index",
+        "segmentation",
         "has_saving_account",
         "has_guarantees",
         "has_current_account",
@@ -135,73 +216,15 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
         "has_direct_debit",
         "is_train",
         "month_snapshot_date",
-        "year_snapshot_date",
-        "code_snapshot_date",
+        "year_snapshot_date",  # "code_snapshot_date",
         "month_initial_signup_date",
         "year_initial_signup_date",
-        "code_initial_signup_date",
+        # "code_initial_signup_date",
         "month_last_date_as_primary",
         "year_last_date_as_primary",
-        "code_last_date_as_primary",
+        # "code_last_date_as_primary",
     ]
-    if Config.label_encode:
-        ordinal = transformer.ordinal.encoder
-        label_cols = transformer.ordinal.cols
-        if not utils.is_encoder_trained(ordinal):
-            df[label_cols] = ordinal.fit_transform(df[label_cols].astype(str))
-        else:
-            logger.info("Encoder %s is trained", ordinal)
-            # Annoyingly have to do this, otherwise sklearn can't handle missing values
-            # ordinal_dict = utils.get_ordinal_dict_from_encoder(ordinal, label_cols)
-            ordinal_dict = utils.get_ordinal_dict_from_encoder(ordinal, label_cols)
-            f = partial(map_dataframe_with_dict_and_default, -1, ordinal_dict)
-            df[label_cols] = df[label_cols].apply(f)
-        df[label_cols] = df[label_cols].astype(int)
-    if Config.impute_missing_cat_values:
-
-        imputer = transformer.categorical_imputer.encoder
-        mode_cols = transformer.categorical_imputer.cols
-        if utils.is_encoder_trained(imputer):
-            logger.info("Encoder %s is trained", imputer)
-            method = imputer.transform
-        else:
-            method = imputer.fit_transform
-        df[mode_cols] = method(df[mode_cols].astype(str))
-
-    if Config.impute_missing_con_values:
-        median_imputer = transformer.continuous_imputer.encoder
-        median_cols = transformer.continuous_imputer.cols
-        if utils.is_encoder_trained(median_imputer):
-            logger.info("Encoder %s is trained", median_imputer)
-            method = median_imputer.transform
-        else:
-            method = median_imputer.fit_transform
-        df[median_cols] = method(df[median_cols])
-
-    if Config.one_hot_encode:
-        one_hot = transformer.one_hot.encoder
-        one_hot_cols = transformer.one_hot.cols
-        if utils.is_encoder_trained(one_hot):
-            method = one_hot.transform
-        else:
-            method = one_hot.fit_transform
-        res = method(df[one_hot_cols].astype(str))
-        drop_cols += one_hot_cols
-        col_list = []
-        for i, j in zip(one_hot_cols, one_hot.categories_):
-            col_list += ["is_{}_{}".format(str(k).replace(" ", "_"), i) for k in j]
-        one_hot_df = pd.DataFrame(res, columns=col_list, dtype=int)
-        one_hot_df.index = df.index
-        df = pd.concat([df, one_hot_df], axis=1)
-
-    utils.log_dataframe_information(df)
-    # suspect_rows = df[df["foreigner_index"] + df["residence_index"] == 0]
-    # logger.info("Have %s suspect rows", len(suspect_rows))
-    df = df[[i for i in df.columns if i not in set(drop_cols)]]
-    df["is_train"] = df["is_train"].astype(bool)
-    df = df[final_cols]
-    logger.info("Dataframe cols %s", df.columns)
-    return df
+    return final_cols
 
 
 def map_dataframe_with_dict_and_default(default: Any, mapping_dict: dict, x: pd.Series):
@@ -216,6 +239,7 @@ def process_df(df: pd.DataFrame) -> pd.DataFrame:
     # Will assume there cols are unchanging
     look_back_ignore_columns = [
         "customer_id",
+        "is_train",
         "spouse_index",
         "address",
         "province_code",
@@ -236,6 +260,11 @@ def process_df(df: pd.DataFrame) -> pd.DataFrame:
 
     for col in df[look_back_cols]:
         for i in range(1, Config.look_back_level + 1):
+            df["prev_{}_{}".format(i, col)] = cust_df[col].shift(i)
+    deeper_look_back_level = 4
+    deeper_look_back_cols = [i for i in df.columns if is_test_column(i)]
+    for col in df[deeper_look_back_cols]:
+        for i in range(Config.look_back_level+1, deeper_look_back_level + 1):
             df["prev_{}_{}".format(i, col)] = cust_df[col].shift(i)
     # Ignore rows with no product bought
     rows_with_acquisition = get_product_deltas(df)
@@ -277,20 +306,13 @@ def build_models(df: pd.DataFrame) -> dict:
     utils.log_dataframe_information(test_x)
     utils.log_dataframe_information(train_y)
     utils.log_dataframe_information(test_y)
-    # params = {
-    #     "objective": "binary",
-    #     "metric": "binary_logloss",
-    #     "num_iterations": 1000,
-    #     "max_depth": 8,
-    #     "learning_rate": 0.06,
-    # }
 
     params = {
         "objective": "binary",
         "metric": "binary_logloss",
         "num_iterations": 100000,
         "max_depth": 15,
-        "learning_rate": 0.008,
+        "learning_rate": 0.001,
         "num_leaves": 2 ** 12,
         "min_data_in_leaf": 1000,
     }
@@ -333,7 +355,7 @@ def get_prediction(df: pd.DataFrame, model_map: dict) -> pd.DataFrame:
     return prediction_rows
 
 
-def get_formatted_prediction(prediction_rows: pd.DataFrame) -> None:
+def get_formatted_prediction(prediction_rows: pd.DataFrame, save_csv=True) -> None:
     pred_cols = [i for i in prediction_rows.columns if is_pred_column(i)]
     translation_dict = utils.get_translation_dict()
     inverse_translation_dict = {v: i for i, v in translation_dict.items()}
@@ -351,21 +373,29 @@ def get_formatted_prediction(prediction_rows: pd.DataFrame) -> None:
     pred_df = pd.concat([pred_df, prediction_rows["customer_id"]], axis=1)
     pred_df.columns = ["added_products", "ncodpers"]
     pred_df = pred_df[list(pred_df.columns)[::-1]]
+    if save_csv:
+        logger.info("Saving predictions to csv")
 
-    logger.info("Saving predictions to csv")
-
-    pred_df.to_csv(
-        "my_pred_{}.csv".format(datetime.datetime.now().strftime("%y_%m_%d_%H_%M_%S")),
-        index=False,
-    )
-    if Config.save_sample_pred_df:
-        pred_df.iloc[:10].to_csv(
-            os.path.join(d.Data.results_directory, "predictions.csv"), index=False
+        pred_df.to_csv(
+            "my_pred_{}.csv".format(
+                datetime.datetime.now().strftime("%y_%m_%d_%H_%M_%S")
+            ),
+            index=False,
         )
-    logger.info("Saved predictions to csv")
+        if Config.save_sample_pred_df:
+            pred_df.iloc[:10].to_csv(
+                os.path.join(d.Data.results_directory, "predictions.csv"), index=False
+            )
+        logger.info("Saved predictions to csv")
+    return pred_df
+
 
 
 def apply_pipeline(df: pd.DataFrame, *args: Callable) -> pd.DataFrame:
+    """
+    Quick pipeline function that chains a series of functions that take a dataframe and
+    return a dataframe. Could instead use sci-kit learn Pipeline
+    """
     out = df
     for callable in args:
         logger.info("Applying callable %s to data", callable)
@@ -373,11 +403,15 @@ def apply_pipeline(df: pd.DataFrame, *args: Callable) -> pd.DataFrame:
     return out
 
 
+transformer = RecommendationModelTransformer()
+
+
 @time_it
 def main():
     try:
         logger.info("Starting pipeline")
         train_date_list = [
+            # "2015-03-28",
             "2015-04-28",
             "2015-05-28",
             "2015-06-28",
@@ -388,8 +422,9 @@ def main():
             "2015-11-28",
             "2015-12-28",
         ]
-        test_date_list = ["2016-04-28", "2016-05-28"]
-        train_data = d.get_date_limited_train_data(train_date_list, 1000)
+        test_date_list = ["2016-03-28", "2016-04-28", "2016-05-28"]
+        train_data = d.get_date_limited_train_data(train_date_list, 10000)
+        logger.info("Customers: %s", len(train_data["ncodpers"].unique()))
         extra_test_data = d.get_date_limited_train_data(test_date_list)
         d.Data.full_train_data = None
         train_data["is_train"] = True
@@ -407,8 +442,25 @@ def main():
         utils.log_dataframe_information(test_data)
 
         models = build_models(train_data)
+        validation_data = train_data[
+            train_data["snapshot_date"] > Config.train_test_date_split
+        ]
+        pred_rows = get_prediction(validation_data, models)
         prediction_rows = get_prediction(test_data, models)
-        get_formatted_prediction(prediction_rows)
+        get_formatted_prediction(prediction_rows, True)
+        if Config.save_models_and_pipeline:
+            joblib.dump(
+                transformer,
+                "transfomer_{}.pkl".format(
+                    datetime.datetime.now().strftime("%y_%m_%d_%H_%M_%S")
+                ),
+            )
+            joblib.dump(
+                models,
+                "models_{}.pkl".format(
+                    datetime.datetime.now().strftime("%y_%m_%d_%H_%M_%S")
+                ),
+            )
     except:
         logger.exception("Error occurred")
 

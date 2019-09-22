@@ -51,12 +51,12 @@ def get_train_data() -> pd.DataFrame:
     return train_data
 
 
-def get_customer_dataframe() -> pd.DataFrame:
+def get_customer_dataframe(number_rows: int = 1000) -> pd.DataFrame:
     customer_csv = os.path.join(Data.data_directory, "train_subsample.csv")
     if not os.path.exists(customer_csv):
         customer_data = pd.read_csv(
             os.path.join(Data.data_directory, "train_ver2.csv"),
-            nrows=1000,
+            nrows=number_rows,
             low_memory=False,
         )
         customers = customer_data["ncodpers"].unique()
