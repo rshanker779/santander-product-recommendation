@@ -30,6 +30,7 @@ class Config:
     data_directory = os.path.join("..", "data")
     train_test_date_split = "2015-10-01"
     look_back_level = 2
+    extra_look_back = None
     impute_missing_cat_values = False
     impute_missing_con_values = True
     one_hot_encode = False
@@ -37,6 +38,8 @@ class Config:
     product_recommendation_threshold = 0.5
     save_sample_pred_df = True
     save_models_and_pipeline = True
+    compute_map_error = True
+    customer_limt = None
 
 
 class RecommendationModelTransformer:
@@ -75,7 +78,7 @@ def translate_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def is_test_column(i: str) -> bool:
-    return "prev" not in i and "has" in i
+    return "prev" not in i and "has" in i and "will" not in i
 
 
 def is_pred_column(i: str) -> bool:
@@ -183,7 +186,8 @@ def get_features():
         "is_new_customer",
         "address",
         "activity_index",
-        "gross_household_income",  # "spouse_index",
+        "gross_household_income",
+        # "spouse_index",
         # "employee_index",
         # "customer_seniority",
         # "is_primary",
@@ -223,13 +227,11 @@ def get_features():
         "has_direct_debit",
         "is_train",
         "month_snapshot_date",
-        "year_snapshot_date",  # "code_snapshot_date",
+        "year_snapshot_date",
         "month_initial_signup_date",
         "year_initial_signup_date",
-        # "code_initial_signup_date",
         "month_last_date_as_primary",
         "year_last_date_as_primary",
-        # "code_last_date_as_primary",
     ]
     return final_cols
 
@@ -268,11 +270,12 @@ def process_df(df: pd.DataFrame) -> pd.DataFrame:
     for col in df[look_back_cols]:
         for i in range(1, Config.look_back_level + 1):
             df["prev_{}_{}".format(i, col)] = cust_df[col].shift(i)
-    deeper_look_back_level = 3
-    deeper_look_back_cols = [i for i in df.columns if is_test_column(i)]
-    for col in df[deeper_look_back_cols]:
-        for i in range(Config.look_back_level + 1, deeper_look_back_level + 1):
-            df["prev_{}_{}".format(i, col)] = cust_df[col].shift(i)
+    if Config.extra_look_back is not None:
+        deeper_look_back_level = Config.extra_look_back
+        deeper_look_back_cols = [i for i in df.columns if is_test_column(i)]
+        for col in df[deeper_look_back_cols]:
+            for i in range(Config.look_back_level + 1, deeper_look_back_level + 1):
+                df["prev_{}_{}".format(i, col)] = cust_df[col].shift(i)
     # Ignore rows with no product bought
     logger.info(
         "Before removing non acquisitions, had %s customers, shape %s",
@@ -361,13 +364,15 @@ def get_x_y_variables(train_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFram
     return train_x, train_y
 
 
-def get_prediction(df: pd.DataFrame, model_map: dict) -> pd.DataFrame:
+def get_prediction(
+    df: pd.DataFrame, model_map: dict, cut_off_date="2016-05-01"
+) -> pd.DataFrame:
     prediction_rows = df
     prediction_x, prediction_y = get_x_y_variables(prediction_rows)
     logger.info("Making predictions for %s rows", len(prediction_x))
     for i, v in model_map.items():
         df.loc[
-            df["snapshot_date"] > "2016-05-01", "will_have_{}".format(i)
+            df["snapshot_date"] > cut_off_date, "will_have_{}".format(i)
         ] = v.predict(prediction_x)
     return prediction_rows
 
@@ -407,6 +412,32 @@ def get_formatted_prediction(prediction_rows: pd.DataFrame, save_csv=True) -> No
     return pred_df
 
 
+def get_map_error(df):
+    predictions = df[[i for i in df.columns if is_pred_column(i)]]
+    actual = df[[i for i in df.columns if is_test_column(i)]]
+    col_map = {i.replace("will_have_", ""): i for i in predictions.columns}
+    actual = actual.rename(columns=col_map)
+    look_up_array = np.array(predictions.columns)
+    preds = np.argsort(predictions, axis=1)
+    preds = np.fliplr(preds)[:, :7]
+    preds = pd.DataFrame(preds, index=predictions.index)
+
+    def f(x):
+        # a = actual.iloc[x.name]
+        z = x.apply(lambda y: 1 if actual.loc[x.name, look_up_array[y]] == 1 else 0)
+        return z
+
+    prediction_correct = preds.apply(f, axis=1)
+    prediction_score = np.cumsum(prediction_correct, axis=1)
+    divs = np.array([i + 1 for i in range(prediction_correct.shape[1])])
+    prediction_score = prediction_score / divs
+    map_score = np.multiply(prediction_score, prediction_correct).sum(axis=1)
+    acutal_acquired = np.minimum(actual.sum(axis=1), 7)
+    total_score = np.mean(np.divide(map_score, acutal_acquired))
+    logger.info("Total MAP7 score is %s", total_score)
+    return total_score
+
+
 def apply_pipeline(df: pd.DataFrame, *args: Callable) -> pd.DataFrame:
     """
     Quick pipeline function that chains a series of functions that take a dataframe and
@@ -439,7 +470,9 @@ def main():
             "2015-12-28",
         ]
         test_date_list = ["2016-03-28", "2016-04-28", "2016-05-28"]
-        train_data = d.get_date_limited_train_data(train_date_list)
+        train_data = d.get_date_limited_train_data(
+            train_date_list, Config.customer_limt
+        )
         logger.info("Customers: %s", len(train_data["ncodpers"].unique()))
         extra_test_data = d.get_date_limited_train_data(test_date_list)
         d.Data.full_train_data = None
@@ -450,18 +483,23 @@ def main():
         test_data = d.get_test_data()
         test_data["is_train"] = False
         test_data = test_data.append(extra_test_data)
-        # test_data = test_data[
-        #     test_data["ncodpers"].isin(train_data["customer_id"].unique())
-        # ]
+        if Config.customer_limt is not None:
+            test_data = test_data[
+                test_data["ncodpers"].isin(train_data["customer_id"].unique())
+            ]
         test_data = apply_pipeline(test_data, *pipeline)
         test_data = test_data[~test_data["is_train"]]
         utils.log_dataframe_information(test_data)
 
         models = build_models(train_data)
-        validation_data = train_data[
-            train_data["snapshot_date"] > Config.train_test_date_split
-        ]
-        pred_rows = get_prediction(validation_data, models)
+        if Config.compute_map_error:
+            validation_data = train_data[
+                train_data["snapshot_date"] > Config.train_test_date_split
+            ]
+            pred_rows = get_prediction(
+                validation_data, models, Config.train_test_date_split
+            )
+            get_map_error(validation_data)
         prediction_rows = get_prediction(test_data, models)
         get_formatted_prediction(prediction_rows, True)
         if Config.save_models_and_pipeline:
