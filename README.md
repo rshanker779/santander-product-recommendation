@@ -1,8 +1,9 @@
 # Santander Product Recommendation Solution
 
 My solution to https://www.kaggle.com/c/santander-product-recommendation/overview
+Data must be downloaded from Kaggle, and placed in directory Data.data_directory in base/recommendation_data.py
 
-
+The code in base contains the code required to load the data, train the model, and output predictions as required by Kaggle.
 
 
 # Build
